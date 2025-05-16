@@ -14,63 +14,59 @@ import {
 
 export const myFriendRouter = router({
   getById: protectedProcedure
-    .input(
-      z.object({
-        friendUserId: IdSchema,
-      })
-    )
+    .input(z.object({ friendUserId: IdSchema }))
     .mutation(async ({ ctx, input }) => {
-      return ctx.db.connection().execute(async (conn) =>
-        /**
-         * Question 4: Implement mutual friend count
-         *
-         * Add `mutualFriendCount` to the returned result of this query. You can
-         * either:
-         *  (1) Make a separate query to count the number of mutual friends,
-         *  then combine the result with the result of this query
-         *  (2) BONUS: Use a subquery (hint: take a look at how
-         *  `totalFriendCount` is implemented)
-         *
-         * Instructions:
-         *  - Go to src/server/tests/friendship-request.test.ts, enable the test
-         * scenario for Question 3
-         *  - Run `yarn test` to verify your answer
-         *
-         * Documentation references:
-         *  - https://kysely-org.github.io/kysely/classes/SelectQueryBuilder.html#innerJoin
-         */
-        conn
-          .selectFrom('users as friends')
-          .innerJoin('friendships', 'friendships.friendUserId', 'friends.id')
-          .innerJoin(
-            userTotalFriendCount(conn).as('userTotalFriendCount'),
-            'userTotalFriendCount.userId',
-            'friends.id'
+      return ctx.db.connection().execute(async (conn) => {
+        // Subquery để đếm bạn chung
+        const mutualFriendsSubquery = conn
+          .selectFrom('friendships as f1')
+          .innerJoin('friendships as f2', (join) =>
+            join
+              .onRef('f1.friendUserId', '=', 'f2.friendUserId')
+              .on('f2.userId', '=', input.friendUserId)
           )
-          .where('friendships.userId', '=', ctx.session.userId)
-          .where('friendships.friendUserId', '=', input.friendUserId)
-          .where(
-            'friendships.status',
-            '=',
-            FriendshipStatusSchema.Values['accepted']
+          .where('f1.userId', '=', ctx.session.userId)
+          .where('f1.status', '=', 'accepted')
+          .where('f2.status', '=', 'accepted')
+          .select((eb) =>
+            eb.fn.count('f1.friendUserId').as('mutualFriendCount')
           )
-          .select([
-            'friends.id',
-            'friends.fullName',
-            'friends.phoneNumber',
-            'totalFriendCount',
-          ])
-          .executeTakeFirstOrThrow(() => new TRPCError({ code: 'NOT_FOUND' }))
-          .then(
-            z.object({
-              id: IdSchema,
-              fullName: NonEmptyStringSchema,
-              phoneNumber: NonEmptyStringSchema,
-              totalFriendCount: CountSchema,
-              mutualFriendCount: CountSchema,
-            }).parse
-          )
-      )
+
+        return (
+          conn
+            .selectFrom('users as friends')
+            .innerJoin('friendships', 'friendships.friendUserId', 'friends.id')
+            .innerJoin(
+              userTotalFriendCount(conn).as('userTotalFriendCount'),
+              'userTotalFriendCount.userId',
+              'friends.id'
+            )
+            // Thêm subquery đếm bạn chung
+            .leftJoin(mutualFriendsSubquery.as('mutualFriends'), (join) =>
+              join.onTrue()
+            )
+            .where('friendships.userId', '=', ctx.session.userId)
+            .where('friendships.friendUserId', '=', input.friendUserId)
+            .where('friendships.status', '=', 'accepted')
+            .select([
+              'friends.id',
+              'friends.fullName',
+              'friends.phoneNumber',
+              'totalFriendCount',
+              'mutualFriendCount', // Thêm kết quả từ subquery
+            ])
+            .executeTakeFirstOrThrow(() => new TRPCError({ code: 'NOT_FOUND' }))
+            .then(
+              z.object({
+                id: IdSchema,
+                fullName: NonEmptyStringSchema,
+                phoneNumber: NonEmptyStringSchema,
+                totalFriendCount: CountSchema,
+                mutualFriendCount: CountSchema, // Xác thực kết quả
+              }).parse
+            )
+        )
+      })
     }),
 })
 
